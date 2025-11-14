@@ -1,0 +1,31 @@
+[package]
+name = "log-mcp-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
+tokio = { version = "1.39", features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.8", features = ["v4", "fast-rng", "serde"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
+tracing = "0.1"
+parking_lot = "0.12"
+thiserror = "1.0"
+memmap2 = "0.9"
+globwalk = "0.9"
+chardetng = "0.1"
+flate2 = { version = "1", features = ["rust_backend"] }
+bstr = "1"
+encoding_rs = "0.8"
+regex = "1"
+globset = "0.4"
+
+[dev-dependencies]
+tempfile = "3.10"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lib]
+name = "log_mcp_rs"
+path = "src/lib.rs"
