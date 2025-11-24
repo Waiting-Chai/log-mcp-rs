@@ -1,0 +1,41 @@
+# 标准配置示例：可用于 HTTP 与 MCP(stdio) 双模式，同时可被环境变量覆盖（前缀 LOG_SEARCH_MCP__）
+server:
+  mode: both        # 运行模式：http / stdio / both
+  http_addr: 0.0.0.0
+  http_port: 3000
+
+log_parser:
+  default_log_start_pattern: '^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\s+\\w+' # 多行起始行正则（示例为常见时间戳+级别）
+  default_timestamp_regex: '\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z'                     # 时间过滤所用的时间戳提取正则（RFC3339）
+
+search:
+  default_page_size: 20       # 默认分页大小
+  max_page_size: 200          # 最大分页大小
+  default_timeout_ms: 3000    # 单文件默认超时时间（可被请求 hard_timeout_ms 覆盖）
+  max_concurrent_files: 4     # 并发处理的文件数
+  buffer_size: 65536          # 读文件缓冲区大小（字节）
+
+# 典型请求体示例（给 agent / 客户端参考，不是配置项）：
+# {
+#   "scan_config": {
+#     "root_path": "/var/log/myapp",           # 扫描根目录
+#     "include_globs": ["**/*.log", "**/*.gz"],# 可选包含模式，空则使用默认集合
+#     "exclude_globs": ["**/tmp/**"]           # 可选排除模式
+#   },
+#   "logical_query": {
+#     "must": [{"query": "ERROR", "regex": false, "case_sensitive": false, "whole_word": false}],
+#     "any": [],
+#     "none": []
+#   },
+#   "time_filter": {
+#     "time_start": null,                      # RFC3339 时间，如 "2024-01-01T00:00:00Z"
+#     "time_end": null,
+#     "timestamp_regex": "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z"
+#   },
+#   "log_start_pattern": "^\\d{4}-\\d{2}-\\d{2}", # 如需多行聚合时使用
+#   "page_size": 20,
+#   "page": 1,
+#   "max_hits": 200,
+#   "hard_timeout_ms": 3000,
+#   "include_content": true
+# }
