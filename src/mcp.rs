@@ -186,6 +186,7 @@ fn rpc_error(req: &RpcRequest, code: i32, message: String) -> RpcResponse {
 
 #[derive(Debug, Deserialize)]
 struct ListFilesParams {
+    #[serde(default)]
     pub root_path: String,
     pub include_globs: Option<Vec<String>>,
     pub exclude_globs: Option<Vec<String>>,
@@ -198,7 +199,6 @@ fn handle_list_tools(req: &RpcRequest) -> RpcResponse {
             "description": "List log files under a root path with optional include/exclude globs.",
             "inputSchema": {
                 "type": "object",
-                "required": ["root_path"],
                 "properties": {
                     "root_path": { "type": "string" },
                     "include_globs": { "type": "array", "items": { "type": "string" } },
@@ -215,7 +215,6 @@ fn handle_list_tools(req: &RpcRequest) -> RpcResponse {
                 "properties": {
                     "scan_config": {
                         "type": "object",
-                        "required": ["root_path"],
                         "properties": {
                             "root_path": { "type": "string" },
                             "include_globs": { "type": "array", "items": { "type": "string" } },

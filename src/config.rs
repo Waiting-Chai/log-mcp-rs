@@ -9,6 +9,13 @@ pub struct Config {
     pub server: ServerConfig,
     pub log_parser: LogParserConfig,
     pub search: SearchConfig,
+    #[serde(default)]
+    pub log_sources: LogSourceConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LogSourceConfig {
+    pub log_file_paths: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +35,7 @@ pub enum ServerMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogParserConfig {
+    #[serde(alias = "line_start_regex")]
     pub default_log_start_pattern: Option<String>,
     pub default_timestamp_regex: Option<String>,
 }

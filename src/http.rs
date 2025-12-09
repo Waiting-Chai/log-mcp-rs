@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use axum::{
     extract::{
@@ -107,12 +107,9 @@ pub fn build_router(engine: Arc<SearchEngine>) -> Router {
 }
 
 pub async fn serve_http(config: Config) -> Result<()> {
-    let engine = Arc::new(SearchEngine::with_config(
-        config.search.clone(),
-        config.log_parser.default_log_start_pattern.clone(),
-        config.log_parser.default_timestamp_regex.clone(),
-    ));
-        let router = build_router(engine);
+    let config_arc = Arc::new(RwLock::new(config.clone()));
+    let engine = Arc::new(SearchEngine::new(config_arc));
+    let router = build_router(engine);
 
     let addr = format!(
         "{}:{}",
@@ -135,7 +132,19 @@ mod tests {
     use tempfile::tempdir;
     use tower::util::ServiceExt;
 
+    use crate::config::{Config, LogParserConfig, LogSourceConfig, SearchConfig, ServerConfig, ServerMode};
     use crate::model::{SearchQuery, SearchResponse};
+
+    fn create_test_engine(buffer_size: usize) -> Arc<SearchEngine> {
+        let mut cfg = Config {
+             server: ServerConfig { mode: ServerMode::Stdio, http_addr: None, http_port: None },
+             log_parser: LogParserConfig { default_log_start_pattern: None, default_timestamp_regex: None },
+             search: SearchConfig::default(),
+             log_sources: LogSourceConfig::default(),
+        };
+        cfg.search.buffer_size = buffer_size;
+        Arc::new(SearchEngine::new(Arc::new(RwLock::new(cfg))))
+    }
 
     fn sq(text: &str) -> SearchQuery {
         SearchQuery {
@@ -153,7 +162,7 @@ mod tests {
         let log_path = root.join("a.log");
         std::fs::write(&log_path, "hello").unwrap();
 
-        let engine = Arc::new(SearchEngine::new(16 * 1024));
+        let engine = create_test_engine(16 * 1024);
         let direct = FileScanConfig {
             root_path: root.to_path_buf(),
             include_globs: vec!["**/*.log".to_string()],
@@ -192,7 +201,7 @@ mod tests {
         let log_path = root.join("demo.log");
         std::fs::write(&log_path, "traffic error\nok\n").unwrap();
 
-        let engine = Arc::new(SearchEngine::new(16 * 1024));
+        let engine = create_test_engine(16 * 1024);
         let app = build_router(engine);
 
         let request_body = json!({
@@ -241,7 +250,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_endpoint_invalid_body_returns_400() {
-        let engine = Arc::new(SearchEngine::new(16 * 1024));
+        let engine = create_test_engine(16 * 1024);
         let app = build_router(engine);
 
         let resp = app

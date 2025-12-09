@@ -14,8 +14,11 @@ pub struct LogEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileScanConfig {
+    #[serde(default)]
     pub root_path: PathBuf,
+    #[serde(default)]
     pub include_globs: Vec<String>,
+    #[serde(default)]
     pub exclude_globs: Vec<String>,
 }
 

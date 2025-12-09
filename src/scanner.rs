@@ -18,6 +18,52 @@ impl FileScanner {
     }
 
     pub fn scan(&self, config: &FileScanConfig) -> Result<Vec<PathBuf>> {
+        self.scan_with_paths(config, &None)
+    }
+
+    pub fn scan_with_paths(
+        &self,
+        config: &FileScanConfig,
+        explicit_paths: &Option<Vec<String>>,
+    ) -> Result<Vec<PathBuf>> {
+        // If explicit paths are provided, we check them against globs (optional)
+        // or just return them if they exist.
+        // The user requirement implies "log_file_paths" specifies the files to read.
+        // We should probably respect include/exclude globs if they are set,
+        // but if log_file_paths is explicit, maybe we just filter them?
+        
+        let mut files = Vec::new();
+
+        if let Some(paths) = explicit_paths {
+            // If explicit paths are given, just check existence and return
+            for p_str in paths {
+                let p = PathBuf::from(p_str);
+                if p.exists() && p.is_file() {
+                    files.push(p);
+                }
+            }
+            // If we also want to merge with root_path scan, we would do that here.
+            // But usually explicit paths override scanning.
+            // However, let's allow merging if root_path is not empty?
+            // For now, if explicit paths are present, we return them. 
+            // If config.root_path is NOT empty, we ALSO scan it?
+            // Let's assume explicit paths are additive or exclusive?
+            // "log_file_paths" usually means "these are the logs".
+            if !files.is_empty() {
+                 return Ok(files);
+            }
+            // If explicit paths yielded nothing (or were empty list), fall back to scan?
+            if paths.is_empty() && !config.root_path.as_os_str().is_empty() {
+                // fall through to scan
+            } else if !paths.is_empty() {
+                return Ok(files);
+            }
+        }
+
+        if config.root_path.as_os_str().is_empty() {
+            return Ok(files);
+        }
+
         let include_fallback: Vec<String>;
         let include_slice: &[String] = if config.include_globs.is_empty() {
             include_fallback = DEFAULT_INCLUDE_GLOBS
