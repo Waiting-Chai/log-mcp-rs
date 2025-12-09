@@ -10,6 +10,7 @@ use crate::search::SearchEngine;
 
 #[derive(Debug, Deserialize)]
 struct RpcRequest {
+    #[serde(default)]
     pub id: Value,
     pub method: String,
     #[serde(default)]
@@ -59,9 +60,27 @@ pub async fn run_stdio(engine: Arc<SearchEngine>) -> Result<()> {
         };
 
         let resp = match req.method.as_str() {
+            "initialize" => handle_initialize(&req),
+            "notifications/initialized" => {
+                // Client confirmed initialization; no response needed for notification,
+                // but we should probably just continue reading loop or log it.
+                // However, run_stdio expects to write a response for every request logic structure here,
+                // but 'notifications' usually don't have IDs.
+                // If req.id is null, it's a notification.
+                if req.id.is_null() {
+                    continue;
+                }
+                // If it has an ID, we acknowledge it (though standard MCP says initialized is a notification)
+                RpcResponse {
+                    jsonrpc: "2.0",
+                    id: req.id,
+                    result: Some(Value::Bool(true)),
+                    error: None,
+                }
+            }
             "list_log_files" => handle_list_files(&engine, &req).await,
             "search_logs" => handle_search(&engine, &req).await,
-            "list_tools" => handle_list_tools(&req),
+            "tools/list" | "list_tools" => handle_list_tools(&req), // Support both standard and custom method name if needed
             _ => RpcResponse {
                 jsonrpc: "2.0",
                 id: req.id,
@@ -77,6 +96,24 @@ pub async fn run_stdio(engine: Arc<SearchEngine>) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn handle_initialize(req: &RpcRequest) -> RpcResponse {
+    RpcResponse {
+        jsonrpc: "2.0",
+        id: req.id.clone(),
+        result: Some(serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {
+                "tools": {}
+            },
+            "serverInfo": {
+                "name": "log-search-mcp",
+                "version": "0.1.0"
+            }
+        })),
+        error: None,
+    }
 }
 
 async fn handle_list_files(engine: &SearchEngine, req: &RpcRequest) -> RpcResponse {
@@ -159,7 +196,7 @@ fn handle_list_tools(req: &RpcRequest) -> RpcResponse {
         serde_json::json!({
             "name": "list_log_files",
             "description": "List log files under a root path with optional include/exclude globs.",
-            "params_schema": {
+            "inputSchema": {
                 "type": "object",
                 "required": ["root_path"],
                 "properties": {
@@ -172,7 +209,7 @@ fn handle_list_tools(req: &RpcRequest) -> RpcResponse {
         serde_json::json!({
             "name": "search_logs",
             "description": "Search log files with logical queries, optional time filter and multiline pattern.",
-            "params_schema": {
+            "inputSchema": {
                 "type": "object",
                 "required": ["scan_config", "logical_query"],
                 "properties": {

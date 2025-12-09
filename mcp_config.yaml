@@ -1,0 +1,15 @@
+server:
+  mode: stdio        # 强制使用 stdio 模式，这是 MCP 的标准通信方式
+
+log_parser:
+  # 这里配置通用的日志起始行正则，适配大多数标准日志格式 (日期开头)
+  default_log_start_pattern: '^\\d{4}-\\d{2}-\\d{2}' 
+  # 提取时间戳的正则，用于按时间范围搜索
+  default_timestamp_regex: '\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}'
+
+search:
+  default_page_size: 20
+  max_page_size: 200
+  default_timeout_ms: 5000
+  max_concurrent_files: 4
+  buffer_size: 65536
