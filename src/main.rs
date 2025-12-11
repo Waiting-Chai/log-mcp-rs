@@ -20,13 +20,60 @@ async fn main() -> Result<()> {
         eprintln!("Usage: {} <config.yaml|json>", args[0]);
         std::process::exit(1);
     }
-    let cfg_path = std::path::Path::new(&args[1]);
-    let config = Config::load_from_path(cfg_path)?;
+    
+    // 调试日志输出到文件
+    use std::io::Write;
+    let log_file_path = "/tmp/log-mcp-debug.log";
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(log_file_path) {
+        let _ = writeln!(file, "\n--- MCP Server Starting at {:?} ---", std::time::SystemTime::now());
+        let _ = writeln!(file, "CWD: {:?}", env::current_dir());
+        let _ = writeln!(file, "Args: {:?}", args);
+        let _ = writeln!(file, "Config Path: {:?}", args[1]);
+    }
 
-    // Wrap config in Arc<RwLock> for hot reload
+    // 调试信息输出到 stderr
+    eprintln!("MCP Server Starting...");
+    eprintln!("CWD: {:?}", env::current_dir());
+    eprintln!("Args: {:?}", args);
+    
+    let cfg_path = std::path::Path::new(&args[1]);
+    
+    // 尝试解析绝对路径以提高清晰度
+    if let Ok(abs_path) = std::fs::canonicalize(cfg_path) {
+        eprintln!("Resolved config path: {:?}", abs_path);
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(log_file_path) {
+             let _ = writeln!(file, "Resolved config path: {:?}", abs_path);
+        }
+    } else {
+        eprintln!("Could not resolve config path: {:?}", cfg_path);
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(log_file_path) {
+             let _ = writeln!(file, "Could not resolve config path: {:?}", cfg_path);
+        }
+    }
+
+    let config = Config::load_from_path(cfg_path).map_err(|e| {
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(log_file_path) {
+             let _ = writeln!(file, "Config load error: {:?}", e);
+        }
+        e
+    })?;
+    
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(log_file_path) {
+         let _ = writeln!(file, "Config loaded successfully.");
+         let _ = writeln!(file, "Log files: {:?}", config.log_sources.log_file_paths);
+    }
+    
+    eprintln!("Config loaded successfully.");
+    if let Some(paths) = &config.log_sources.log_file_paths {
+        eprintln!("Global log files configured: {:?}", paths);
+    } else {
+        eprintln!("No global log files configured!");
+    }
+
+    // 将配置包装在 Arc<RwLock> 中以支持热重载
     let config_arc = Arc::new(RwLock::new(config.clone()));
     
-    // Start hot reload task
+    // 启动热重载任务
     let config_path_owned = cfg_path.to_path_buf();
     let config_for_update = config_arc.clone();
     
@@ -43,7 +90,7 @@ async fn main() -> Result<()> {
                 Ok(m) => {
                      let mtime = m.modified().ok();
                      if mtime != last_mtime {
-                         // Simple debounce or just reload
+                         // 简单的去抖动或直接重载
                          eprintln!("Config changed, reloading...");
                          match Config::load_from_path(&config_path_owned) {
                              Ok(new_cfg) => {
@@ -74,16 +121,7 @@ async fn main() -> Result<()> {
         log_search_mcp::config::ServerMode::Both => {
             let engine = std::sync::Arc::new(log_search_mcp::search::SearchEngine::new(config_arc));
             let engine2 = engine.clone();
-            // Note: serve_http takes owned config, so it won't benefit from hot reload unless we change it signature.
-            // But we already changed serve_http logic? No, serve_http takes Config.
-            // Wait, I updated serve_http to use Config and then wrap it.
-            // That means serve_http creates its OWN Arc<RwLock<Config>>.
-            // So hot reload in main.rs WON'T affect serve_http if passed by value.
-            // I should change serve_http signature or pass the shared Arc.
-            // But let's fix Stdio first which is priority.
-            // For 'Both', HTTP server won't hot reload with current serve_http signature.
-            // That's acceptable for now or I should update serve_http signature.
-            // Let's stick to Stdio hot reload as primary request.
+            // 注意：serve_http 接收 Config 所有权，因此 HTTP 服务目前不支持热重载配置。
             
             let http_task = tokio::spawn(async move { serve_http(config).await });
             let stdio_task = tokio::spawn(async move { run_stdio(engine2).await });

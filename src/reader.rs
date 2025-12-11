@@ -11,7 +11,7 @@ use tokio::io::SeekFrom;
 
 use crate::error::{LogSearchError, Result};
 
-/// File reader: stream lines with auto encoding detection and gzip support.
+/// 文件读取器：流式读取行，支持自动编码检测和 gzip 支持。
 #[derive(Clone)]
 pub struct FileReader {
     pub buffer_size: usize,
@@ -22,7 +22,7 @@ impl FileReader {
         Self { buffer_size }
     }
 
-    /// Stream text lines with auto encoding detection; gz files decoded as UTF-8.
+    /// 流式读取文本行，支持自动编码检测；gz 文件解码为 UTF-8。
     pub async fn read_lines(&self, path: &Path) -> Result<BoxStream<'static, Result<String>>> {
         if is_gz(path) {
             return self.read_gzip_lines(path).await;
@@ -80,7 +80,7 @@ impl FileReader {
         Ok(Box::pin(stream))
     }
 
-    /// Detect file encoding, defaulting to UTF-8. Repositions file cursor after any BOM.
+    /// 检测文件编码，默认为 UTF-8。检测到 BOM 后重新定位文件游标。
     async fn detect_encoding(&self, file: &mut File) -> Result<&'static Encoding> {
         let mut buf = vec![0u8; 8192];
         let read = file.read(&mut buf).await?;

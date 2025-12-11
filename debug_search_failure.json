@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": "tool-failure-search", "method": "call_tool", "params": {"name": "search_logs", "arguments": {"scan_config": {"root_path": "/Users/maweilong/fsdownload"}, "logical_query": {"must": ["sim_0015", "failedResult"], "any": [], "none": []}, "include_content": true, "time_filter": {"after": "2025-11-08 13:59:30", "before": "2025-11-08 14:00:30"}}}}

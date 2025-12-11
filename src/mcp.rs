@@ -8,6 +8,13 @@ use crate::error::{LogSearchError, Result};
 use crate::model::{FileScanConfig, SearchRequest};
 use crate::search::SearchEngine;
 
+fn debug_log(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/log-mcp-debug.log") {
+        let _ = writeln!(file, "[MCP] {}", msg);
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct RpcRequest {
     #[serde(default)]
@@ -62,15 +69,9 @@ pub async fn run_stdio(engine: Arc<SearchEngine>) -> Result<()> {
         let resp = match req.method.as_str() {
             "initialize" => handle_initialize(&req),
             "notifications/initialized" => {
-                // Client confirmed initialization; no response needed for notification,
-                // but we should probably just continue reading loop or log it.
-                // However, run_stdio expects to write a response for every request logic structure here,
-                // but 'notifications' usually don't have IDs.
-                // If req.id is null, it's a notification.
                 if req.id.is_null() {
                     continue;
                 }
-                // If it has an ID, we acknowledge it (though standard MCP says initialized is a notification)
                 RpcResponse {
                     jsonrpc: "2.0",
                     id: req.id,
@@ -78,9 +79,12 @@ pub async fn run_stdio(engine: Arc<SearchEngine>) -> Result<()> {
                     error: None,
                 }
             }
+
+            "tools/call" | "call_tool" => handle_tool_call(&engine, &req).await,
+            
             "list_log_files" => handle_list_files(&engine, &req).await,
             "search_logs" => handle_search(&engine, &req).await,
-            "tools/list" | "list_tools" => handle_list_tools(&req), // Support both standard and custom method name if needed
+            "tools/list" | "list_tools" => handle_list_tools(&req),
             _ => RpcResponse {
                 jsonrpc: "2.0",
                 id: req.id,
@@ -116,13 +120,64 @@ fn handle_initialize(req: &RpcRequest) -> RpcResponse {
     }
 }
 
+async fn handle_tool_call(engine: &SearchEngine, req: &RpcRequest) -> RpcResponse {
+    // 解析 tools/call 的参数
+    // params 应该包含 name 和 arguments
+    #[derive(Deserialize)]
+    struct ToolCallParams {
+        name: String,
+        arguments: serde_json::Value,
+    }
+
+    debug_log(&format!("handle_tool_call: params={}", req.params));
+
+    let params: std::result::Result<ToolCallParams, _> = serde_json::from_value(req.params.clone());
+    
+    match params {
+        Ok(mut p) => {
+            debug_log(&format!("Tool call name: {}", p.name));
+            
+            // 处理 arguments 为字符串（双重编码 JSON）的情况
+            if let Some(arg_str) = p.arguments.as_str() {
+                if let Ok(parsed_args) = serde_json::from_str::<serde_json::Value>(arg_str) {
+                    debug_log("Parsed arguments from string");
+                    p.arguments = parsed_args;
+                }
+            }
+
+            // 构造一个新的 RpcRequest，把 arguments 当作 params 传给具体处理函数
+            let sub_req = RpcRequest {
+                // RpcRequest 结构定义中没有 jsonrpc 字段！
+                method: p.name.clone(),
+                params: p.arguments,
+                id: req.id.clone(),
+            };
+            
+            match p.name.as_str() {
+                "list_log_files" => handle_list_files(engine, &sub_req).await,
+                "search_logs" => handle_search(engine, &sub_req).await,
+                _ => rpc_error(req, -32601, format!("tool not found: {}", p.name)),
+            }
+        }
+        Err(e) => {
+            debug_log(&format!("Tool call parse error: {}", e));
+            rpc_error(req, -32700, format!("invalid tool call params: {}", e))
+        },
+    }
+}
+
 async fn handle_list_files(engine: &SearchEngine, req: &RpcRequest) -> RpcResponse {
+    debug_log("handle_list_files called");
     let params: Result<ListFilesParams> = serde_json::from_value(req.params.clone())
         .map_err(|e| LogSearchError::InvalidRequest(format!("invalid params: {e}")))
         .map_err(Into::into);
 
     match params {
         Ok(p) => {
+            // 检查 root_path 是否为空。如果是，则依赖全局 log_file_paths。
+            // 但必须正确构造 FileScanConfig。
+            // 如果 p.root_path 为空字符串（由于默认值），则传递空的 PathBuf。
+            
             let cfg = FileScanConfig {
                 root_path: p.root_path.into(),
                 include_globs: p.include_globs.unwrap_or_default(),
@@ -134,14 +189,28 @@ async fn handle_list_files(engine: &SearchEngine, req: &RpcRequest) -> RpcRespon
                         .into_iter()
                         .map(|p| p.to_string_lossy().to_string())
                         .collect();
+                    
+                    // MCP 要求结果包装在 content 数组中
+                    let content_text = serde_json::to_string_pretty(&serde_json::json!({ "files": list })).unwrap_or_default();
+                    
                     RpcResponse {
                         jsonrpc: "2.0",
                         id: req.id.clone(),
-                        result: Some(serde_json::json!({ "files": list })),
+                        result: Some(serde_json::json!({
+                            "content": [{
+                                "type": "text",
+                                "text": content_text
+                            }],
+                            "isError": false
+                        })),
                         error: None,
                     }
                 }
-                Err(e) => rpc_error(req, -32001, e.to_string()),
+                Err(e) => {
+                    // 如果可能，应用错误也应作为工具结果返回，
+                    // 但此处暂时保持使用 rpc_error 或切换到 isError=true
+                    rpc_error(req, -32001, e.to_string())
+                },
             }
         }
         Err(e) => rpc_error(req, -32602, e.to_string()),
@@ -149,21 +218,58 @@ async fn handle_list_files(engine: &SearchEngine, req: &RpcRequest) -> RpcRespon
 }
 
 async fn handle_search(engine: &SearchEngine, req: &RpcRequest) -> RpcResponse {
+    debug_log(&format!("handle_search: params={}", req.params));
     let params: Result<SearchRequest> = serde_json::from_value(req.params.clone())
         .map_err(|e| LogSearchError::InvalidRequest(format!("invalid params: {e}")))
         .map_err(Into::into);
 
     match params {
-        Ok(p) => match engine.search(p).await {
-            Ok(res) => RpcResponse {
-                jsonrpc: "2.0",
-                id: req.id.clone(),
-                result: Some(serde_json::to_value(res).unwrap_or(Value::Null)),
-                error: None,
-            },
-            Err(e) => rpc_error(req, -32002, e.to_string()),
+        Ok(p) => {
+            debug_log(&format!("Search request parsed: {:?}", p));
+            match engine.search(p).await {
+                Ok(res) => {
+                    debug_log(&format!("Search success. Hits: {}", res.hits.len()));
+                    
+                    // 将结果序列化为格式化的 JSON 字符串
+                    let content_text = serde_json::to_string_pretty(&res).unwrap_or_else(|_| "{}".to_string());
+                    
+                    RpcResponse {
+                        jsonrpc: "2.0",
+                        id: req.id.clone(),
+                        result: Some(serde_json::json!({
+                            "content": [{
+                                "type": "text",
+                                "text": content_text
+                            }],
+                            "isError": false
+                        })),
+                        error: None,
+                    }
+                },
+                Err(e) => {
+                    debug_log(&format!("Search failed: {}", e));
+                    // 将应用错误作为工具结果返回，以便模型可以看到它
+                    let error_text = format!("Search failed: {}", e);
+                    RpcResponse {
+                        jsonrpc: "2.0",
+                        id: req.id.clone(),
+                        result: Some(serde_json::json!({
+                            "content": [{
+                                "type": "text",
+                                "text": error_text
+                            }],
+                            "isError": true
+                        })),
+                        error: None,
+                    }
+                },
+            }
         },
-        Err(e) => rpc_error(req, -32602, e.to_string()),
+        Err(e) => {
+            debug_log(&format!("Search params parse error: {}", e));
+            // 参数解析错误仍然是协议/请求错误，但我们也可以将其作为文本返回
+            rpc_error(req, -32602, e.to_string())
+        },
     }
 }
 
@@ -200,7 +306,7 @@ fn handle_list_tools(req: &RpcRequest) -> RpcResponse {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "root_path": { "type": "string" },
+                    "root_path": { "type": "string", "description": "Optional root path. If omitted, uses globally configured log files." },
                     "include_globs": { "type": "array", "items": { "type": "string" } },
                     "exclude_globs": { "type": "array", "items": { "type": "string" } }
                 }
@@ -216,7 +322,7 @@ fn handle_list_tools(req: &RpcRequest) -> RpcResponse {
                     "scan_config": {
                         "type": "object",
                         "properties": {
-                            "root_path": { "type": "string" },
+                            "root_path": { "type": "string", "description": "Root directory to scan. Optional if system logs are configured." },
                             "include_globs": { "type": "array", "items": { "type": "string" } },
                             "exclude_globs": { "type": "array", "items": { "type": "string" } }
                         }
@@ -224,9 +330,57 @@ fn handle_list_tools(req: &RpcRequest) -> RpcResponse {
                     "logical_query": {
                         "type": "object",
                         "properties": {
-                            "must": { "type": "array" },
-                            "any": { "type": "array" },
-                            "none": { "type": "array" }
+                            "must": { 
+                                "type": "array",
+                                "items": {
+                                    "anyOf": [
+                                        { "type": "string" },
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "query": { "type": "string" },
+                                                "regex": { "type": "boolean" },
+                                                "case_sensitive": { "type": "boolean" },
+                                                "whole_word": { "type": "boolean" }
+                                            }
+                                        }
+                                    ]
+                                }
+                            },
+                            "any": { 
+                                "type": "array",
+                                "items": {
+                                    "anyOf": [
+                                        { "type": "string" },
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "query": { "type": "string" },
+                                                "regex": { "type": "boolean" },
+                                                "case_sensitive": { "type": "boolean" },
+                                                "whole_word": { "type": "boolean" }
+                                            }
+                                        }
+                                    ]
+                                }
+                            },
+                            "none": { 
+                                "type": "array",
+                                "items": {
+                                    "anyOf": [
+                                        { "type": "string" },
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "query": { "type": "string" },
+                                                "regex": { "type": "boolean" },
+                                                "case_sensitive": { "type": "boolean" },
+                                                "whole_word": { "type": "boolean" }
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
                         }
                     },
                     "time_filter": { "type": ["object", "null"] },

@@ -5,18 +5,41 @@ use futures::{stream, Stream, StreamExt};
 use tokio::time::{timeout, Duration};
 use tracing::{error, warn};
 
-use crate::config::SearchConfig;
 use crate::error::Result;
 use crate::model::{HitResult, MatchPosition, SearchRequest, SearchResponse, TimeFilter};
 use crate::parser::LogParser;
-use crate::query::QueryProcessor;
+use crate::query::{QueryProcessor, ParsedTimeFilter};
 use crate::reader::FileReader;
 use crate::scanner::FileScanner;
 
 use std::sync::{Arc, RwLock};
 use crate::config::Config;
 
-/// Search engine: orchestrates scanning, reading, parsing, and matching.
+fn parse_time_filter(tf: &crate::model::TimeFilter) -> ParsedTimeFilter {
+    let parse_dt = |s: &str| -> Option<chrono::DateTime<chrono::Utc>> {
+        // 优先尝试 RFC3339 格式
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+            return Some(dt.with_timezone(&chrono::Utc));
+        }
+        // 尝试用空格代替 T
+        let normalized = s.replace('T', " ");
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&normalized, "%Y-%m-%d %H:%M:%S") {
+             return Some(chrono::DateTime::from_utc(dt, chrono::Utc));
+        }
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&normalized, "%Y-%m-%d %H:%M:%S%.3f") {
+             return Some(chrono::DateTime::from_utc(dt, chrono::Utc));
+        }
+        None
+    };
+
+    ParsedTimeFilter {
+        start: tf.time_start.as_deref().and_then(parse_dt),
+        end: tf.time_end.as_deref().and_then(parse_dt),
+        regex: tf.timestamp_regex.as_deref().and_then(|r| regex::Regex::new(r).ok()),
+    }
+}
+
+/// 搜索引擎：协调扫描、读取、解析和匹配。
 pub struct SearchEngine {
     config: Arc<RwLock<Config>>,
     scanner: FileScanner,
@@ -28,8 +51,12 @@ pub struct SearchEngine {
 impl SearchEngine {
     pub fn new(config: Arc<RwLock<Config>>) -> Self {
         let buffer_size = config.read().unwrap().search.buffer_size;
+        let mut reader = FileReader::new(buffer_size);
+        // 如果 is_gzip 为 true，FileReader 会自动处理 gzip。
+        // 它通过扩展名检测。日志文件是 .log，但可能是纯文本。
+        
         Self {
-            reader: FileReader::new(buffer_size),
+            reader,
             config,
             scanner: FileScanner::new(),
             parser: LogParser::new(),
@@ -38,18 +65,20 @@ impl SearchEngine {
     }
 
     pub fn list_files(&self, config: &crate::model::FileScanConfig) -> Result<Vec<PathBuf>> {
-        // Merge global paths if needed, though list_files is usually explicit.
-        // But if config.root_path is empty, we might rely on global paths.
-        // For now, let's just pass through, but if we wanted to support global paths here too:
+        // 如果需要，合并全局路径，尽管 list_files 通常是显式的。
+        // 但如果 config.root_path 为空，我们可能会依赖全局路径。
+        // 目前，我们直接传递，但如果我们也想在这里支持全局路径：
         let global_cfg = self.config.read().unwrap();
         let global_paths = global_cfg.log_sources.log_file_paths.clone();
         
         if let Some(paths) = global_paths {
-             // If scanner supports explicit paths, use them.
-             // Currently scanner only supports root_path + globs.
-             // We need to modify scanner.
+             // 如果扫描器支持显式路径，请使用它们。
+             // 目前扫描器仅支持 root_path + globs。
+             // 我们需要修改扫描器。
              self.scanner.scan_with_paths(config, &Some(paths))
         } else {
+             // 如果没有全局配置，且 root_path 为空，我们返回空列表？
+             // 或者尝试扫描 root_path
              self.scanner.scan(config)
         }
     }
@@ -63,12 +92,19 @@ impl SearchEngine {
             (cfg.search.clone(), cfg.log_parser.clone(), cfg.log_sources.clone())
         };
 
-        // Scan files
+        // 扫描文件
+        // 关键调试点：确认是否真的扫描到了文件
         let files = if let Some(paths) = &log_sources.log_file_paths {
+             // 如果配置了全局路径，直接使用
              self.scanner.scan_with_paths(&request.scan_config, &Some(paths.clone()))?
         } else {
              self.scanner.scan(&request.scan_config)?
         };
+        
+        // eprintln!("DEBUG: scanned files count: {}", files.len());
+        // for f in &files {
+        //    eprintln!("DEBUG: file: {:?}", f);
+        // }
 
         let mut hits: Vec<HitResult> = Vec::new();
         let mut failed_files = Vec::new();
@@ -82,15 +118,18 @@ impl SearchEngine {
             .cloned();
 
         let mut time_filter = request.time_filter.clone();
-        if time_filter.is_none() {
-            if let Some(ts) = &log_parser_config.default_timestamp_regex {
-                time_filter = Some(TimeFilter {
-                    time_start: None,
-                    time_end: None,
-                    timestamp_regex: Some(ts.clone()),
-                });
+        if let Some(ref mut tf) = time_filter {
+            if tf.timestamp_regex.is_none() {
+                tf.timestamp_regex = log_parser_config.default_timestamp_regex.clone();
             }
+        } else if let Some(ts) = &log_parser_config.default_timestamp_regex {
+             time_filter = Some(TimeFilter {
+                 time_start: None,
+                 time_end: None,
+                 timestamp_regex: Some(ts.clone()),
+             });
         }
+        let parsed_time_filter = time_filter.as_ref().map(parse_time_filter);
 
         let log_start_re = if let Some(pat) = &log_start_pattern {
             Some(self.query.compile_regex(pat, true)?)
@@ -107,7 +146,7 @@ impl SearchEngine {
             let request = request.clone();
             let log_start_re = log_start_re.clone();
             let default_timeout = search_config.default_timeout_ms;
-            let time_filter = time_filter.clone();
+            let time_filter = parsed_time_filter.clone();
 
             async move {
                 if let Ok(meta) = std::fs::metadata(&path) {
@@ -118,8 +157,11 @@ impl SearchEngine {
                 }
 
                 let single_file = async {
+                    // eprintln!("DEBUG: reading file {}", path.display());
                     let lines = reader.read_lines(&path).await?;
+                    // eprintln!("DEBUG: read lines ok, parsing...");
                     let entries = parser.parse(path.clone(), lines, log_start_re).await?;
+                    // eprintln!("DEBUG: parsing ok, scanning entries...");
                     scan_entries_static(&query, entries, &request, time_filter).await
                 };
 
@@ -212,7 +254,7 @@ impl SearchEngine {
         Ok(response)
     }
 
-    /// single file search, mainly for test composition
+    /// 单文件搜索，主要用于测试组合
     pub async fn search_file(&self, path: PathBuf, request: &SearchRequest) -> Result<Vec<HitResult>> {
         let (log_parser_config, _) = {
             let cfg = self.config.read().unwrap();
@@ -241,27 +283,21 @@ impl SearchEngine {
                 });
             }
         }
+        let parsed_time_filter = time_filter.as_ref().map(parse_time_filter);
 
         let entries = self
             .parser
             .parse(path.clone(), lines, log_start_re)
             .await?;
-        // Need to import scan_entries_static or move logic? 
-        // Ah, scan_entries_static is likely a private helper function in search.rs. 
-        // I need to check if it exists or if I need to implement it.
-        // It seems I didn't see it in Read output earlier?
-        // Wait, line 244 in Read output calls `scan_entries_static`.
-        // So it must exist in the file.
-        // I'll just keep the call.
-        self.scan_entries(entries, request, time_filter).await
+        self.scan_entries(entries, request, parsed_time_filter).await
     }
 
-    // Helper to replace scan_entries_static if it was not static method but I need access to self.query
-    async fn scan_entries(&self, entries: impl Stream<Item = Result<crate::model::LogEntry>> + Unpin, request: &SearchRequest, time_filter: Option<TimeFilter>) -> Result<Vec<HitResult>> {
+    // 如果 scan_entries_static 不是静态方法但我需要访问 self.query，则使用此辅助函数替代
+    async fn scan_entries(&self, entries: impl Stream<Item = Result<crate::model::LogEntry>> + Unpin, request: &SearchRequest, time_filter: Option<ParsedTimeFilter>) -> Result<Vec<HitResult>> {
          scan_entries_static(&self.query, entries, request, time_filter).await
     }
 
-    fn validate_request(&self, request: &SearchRequest) -> Result<()> {
+    pub fn validate_request(&self, request: &SearchRequest) -> Result<()> {
         let global_cfg = self.config.read().unwrap();
         let has_global = global_cfg.log_sources.log_file_paths.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
         
@@ -271,17 +307,32 @@ impl SearchEngine {
              }
              // if has global, we skip directory check for root_path
         } else {
-            let meta = std::fs::metadata(&request.scan_config.root_path).map_err(|e| {
-                crate::error::LogSearchError::FileAccessError {
-                    path: request.scan_config.root_path.clone(),
-                    reason: e.to_string(),
+            // 如果提供了 root_path，我们需要验证它是否存在
+            // 但如果用户传入 "." 这种相对路径，fs::metadata 可能会基于当前工作目录去找
+            // MCP server 的工作目录通常是启动它的目录。
+            // 
+            // 关键修复：如果 request.scan_config.root_path 指向一个不存在的目录，但我们有全局日志配置，
+            // 我们应该宽容处理吗？或者，如果它是 ".", 且它存在，就没问题。
+            
+            let meta_res = std::fs::metadata(&request.scan_config.root_path);
+            match meta_res {
+                Ok(meta) => {
+                     if !meta.is_dir() {
+                        return Err(crate::error::LogSearchError::InvalidRequest(format!(
+                            "{:?} is not a directory",
+                            request.scan_config.root_path
+                        )));
+                    }
+                },
+                Err(e) => {
+                     // 如果校验失败，但我们有全局配置，且 root_path 看起来像是一个为了绕过必填检查的占位符（比如 "." 但如果当前目录不可读？）
+                     // 不过通常 "." 是存在的。
+                     // 如果用户传了一个无效路径，报错是合理的。
+                     return Err(crate::error::LogSearchError::FileAccessError {
+                        path: request.scan_config.root_path.clone(),
+                        reason: e.to_string(),
+                    });
                 }
-            })?;
-            if !meta.is_dir() {
-                return Err(crate::error::LogSearchError::InvalidRequest(format!(
-                    "{:?} is not a directory",
-                    request.scan_config.root_path
-                )));
             }
         }
 
@@ -305,16 +356,21 @@ async fn scan_entries_static(
     query: &QueryProcessor,
     mut entries: impl Stream<Item = Result<crate::model::LogEntry>> + Unpin,
     request: &SearchRequest,
-    time_filter: Option<TimeFilter>,
+    time_filter: Option<ParsedTimeFilter>,
 ) -> Result<Vec<HitResult>> {
     let mut hits = Vec::new();
     while let Some(entry) = entries.next().await {
         let entry = entry?;
 
+        // 输出调试信息到 stderr（不会影响 stdout json-rpc）
+        // eprintln!("DEBUG: checking entry: {}", entry.content.lines().next().unwrap_or(""));
+
         if !query.apply_time_filter(&entry.content, &time_filter) {
+            // eprintln!("DEBUG: time filter rejected");
             continue;
         }
         if !query.matches(&entry.content, &request.logical_query) {
+            // eprintln!("DEBUG: content match rejected");
             continue;
         }
 

@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": "1", "method": "search_logs", "params": {"scan_config": {"root_path": "/Users/maweilong/fsdownload"}, "logical_query": {"must": ["sim_0015"], "any": [], "none": []}, "include_content": true}}

@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": "1", "method": "search_logs", "params": {"logical_query": {"must": ["sim_0015"], "any": [], "none": []}, "scan_config": {"root_path": ".", "include_globs": ["**/*.log"]}, "page_size": 100, "hard_timeout_ms": 30000}}

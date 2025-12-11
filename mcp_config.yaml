@@ -3,7 +3,7 @@ server:
 
 log_parser:
   # 支持自定义行首正则，用于多行合并
-  line_start_regex: '^\\d{4}-\\d{2}-\\d{2}' 
+  line_start_regex: '\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}' 
   # 提取时间戳的正则，用于按时间范围搜索
   default_timestamp_regex: '\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}'
 
@@ -16,6 +16,5 @@ search:
 
 log_sources:
   # 在此处指定日志文件路径列表（可选）
-  # log_file_paths:
-  #   - "/var/log/system.log"
-  #   - "/path/to/app.log"
+  log_file_paths:
+    - "/Users/maweilong/fsdownload/rcs-kernel-traffic-2025-11-08-14-1.log"

@@ -4,9 +4,17 @@ use chrono::{DateTime, Utc};
 use regex::{Regex, RegexBuilder};
 
 use crate::error::Result;
-use crate::model::{LogicalQuery, MatchPosition, SearchQuery, TimeFilter};
+use crate::model::{LogicalQuery, MatchPosition, SearchQuery};
 
-/// Query processor: text/regex matching, logical combination, and time filtering.
+/// 用于高效应用时间过滤器的内部结构
+#[derive(Debug, Clone)]
+pub struct ParsedTimeFilter {
+    pub start: Option<DateTime<Utc>>,
+    pub end: Option<DateTime<Utc>>,
+    pub regex: Option<Regex>,
+}
+
+/// 查询处理器：文本/正则匹配、逻辑组合和时间过滤。
 #[derive(Clone, Default)]
 pub struct QueryProcessor;
 
@@ -46,7 +54,7 @@ impl QueryProcessor {
             return Vec::new();
         }
 
-        // plain text matching (with optional whole-word)
+        // 纯文本匹配（可选全字匹配）
         let haystack = if query.case_sensitive {
             Cow::Borrowed(text)
         } else {
@@ -102,27 +110,42 @@ impl QueryProcessor {
         })
     }
 
-    pub fn apply_time_filter(&self, text: &str, filter: &Option<TimeFilter>) -> bool {
+    pub fn apply_time_filter(&self, text: &str, filter: &Option<ParsedTimeFilter>) -> bool {
         let Some(filter) = filter else { return true; };
-        let Some(re_str) = &filter.timestamp_regex else { return true; };
-        let re = match Regex::new(re_str) {
-            Ok(r) => r,
-            Err(_) => return true, // invalid regex -> skip time filter
-        };
+        let Some(re) = &filter.regex else { return true; };
+        
         let ts_str = match re.find(text) {
             Some(m) => &text[m.start()..m.end()],
-            None => return true, // no timestamp -> skip
+            None => return true, 
         };
-        let ts = match DateTime::parse_from_rfc3339(ts_str) {
-            Ok(dt) => dt.with_timezone(&Utc),
-            Err(_) => return true, // parse failed -> skip
+        
+        // 尝试多种格式解析
+        // 优先 RFC3339, 其次常见的日志格式
+        let ts = if let Ok(dt) = DateTime::parse_from_rfc3339(ts_str) {
+            dt.with_timezone(&Utc)
+        } else if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(ts_str, "%Y-%m-%d %H:%M:%S") {
+            // 假设是本地时间，或者 UTC
+             DateTime::from_utc(dt, Utc)
+        } else if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(ts_str, "%Y-%m-%d %H:%M:%S%.3f") {
+             DateTime::from_utc(dt, Utc)
+        } else {
+             // 尝试把 T 换成空格
+             let normalized = ts_str.replace('T', " ");
+             if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&normalized, "%Y-%m-%d %H:%M:%S") {
+                 DateTime::from_utc(dt, Utc)
+             } else if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&normalized, "%Y-%m-%d %H:%M:%S%.3f") {
+                 DateTime::from_utc(dt, Utc)
+             } else {
+                 return true; // 解析失败，默认不过滤
+             }
         };
-        if let Some(start) = filter.time_start {
+
+        if let Some(start) = filter.start {
             if ts < start {
                 return false;
             }
         }
-        if let Some(end) = filter.time_end {
+        if let Some(end) = filter.end {
             if ts > end {
                 return false;
             }
@@ -219,18 +242,18 @@ mod tests {
     #[test]
     fn time_filter_respects_range() {
         let qp = QueryProcessor::new();
-        let tf = TimeFilter {
-            time_start: Some(
+        let tf = ParsedTimeFilter {
+            start: Some(
                 Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0)
                     .single()
                     .unwrap(),
             ),
-            time_end: Some(
+            end: Some(
                 Utc.with_ymd_and_hms(2024, 1, 2, 0, 0, 0)
                     .single()
                     .unwrap(),
             ),
-            timestamp_regex: Some(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z".into()),
+            regex: Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z").ok(),
         };
         let log_in = "2024-01-01T12:00:00Z something";
         let log_out = "2024-01-03T00:00:00Z late";

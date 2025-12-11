@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": "tool-3", "method": "call_tool", "params": {"name": "search_logs", "arguments": {"scan_config": {}, "logical_query": {"must": ["sim_0015"], "any": [], "none": []}, "include_content": true}}}

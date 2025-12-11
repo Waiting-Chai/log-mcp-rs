@@ -6,7 +6,7 @@ use walkdir::WalkDir;
 use crate::error::{LogSearchError, Result};
 use crate::model::FileScanConfig;
 
-/// File scanner: recursively collect log files by include/exclude globs.
+/// 文件扫描器：根据包含/排除 globs 递归收集日志文件。
 #[derive(Clone, Default)]
 pub struct FileScanner;
 
@@ -26,37 +26,42 @@ impl FileScanner {
         config: &FileScanConfig,
         explicit_paths: &Option<Vec<String>>,
     ) -> Result<Vec<PathBuf>> {
-        // If explicit paths are provided, we check them against globs (optional)
-        // or just return them if they exist.
-        // The user requirement implies "log_file_paths" specifies the files to read.
-        // We should probably respect include/exclude globs if they are set,
-        // but if log_file_paths is explicit, maybe we just filter them?
-        
         let mut files = Vec::new();
+        
+        // Debug log
+        use std::io::Write;
+        let log_file_path = "/tmp/log-mcp-debug.log";
 
         if let Some(paths) = explicit_paths {
-            // If explicit paths are given, just check existence and return
             for p_str in paths {
                 let p = PathBuf::from(p_str);
-                if p.exists() && p.is_file() {
-                    files.push(p);
+                let exists = p.exists();
+                let is_file = p.is_file();
+                
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(log_file_path) {
+                     let _ = writeln!(file, "Checking explicit path: {:?}, exists: {}, is_file: {}", p, exists, is_file);
+                     if !exists {
+                         // 尝试列出父目录以查看内容
+                         if let Some(parent) = p.parent() {
+                             let _ = writeln!(file, "Listing parent {:?}:", parent);
+                             if let Ok(entries) = std::fs::read_dir(parent) {
+                                 for entry in entries.flatten() {
+                                     let _ = writeln!(file, "  - {:?}", entry.path());
+                                 }
+                             } else {
+                                 let _ = writeln!(file, "  Failed to read parent directory");
+                             }
+                         }
+                     }
                 }
-            }
-            // If we also want to merge with root_path scan, we would do that here.
-            // But usually explicit paths override scanning.
-            // However, let's allow merging if root_path is not empty?
-            // For now, if explicit paths are present, we return them. 
-            // If config.root_path is NOT empty, we ALSO scan it?
-            // Let's assume explicit paths are additive or exclusive?
-            // "log_file_paths" usually means "these are the logs".
-            if !files.is_empty() {
-                 return Ok(files);
-            }
-            // If explicit paths yielded nothing (or were empty list), fall back to scan?
-            if paths.is_empty() && !config.root_path.as_os_str().is_empty() {
-                // fall through to scan
-            } else if !paths.is_empty() {
-                return Ok(files);
+
+                if exists {
+                     // 简单地检查是否存在，不强制检查是否是 file (可能是 symlink)
+                     // 但我们还是希望只处理文件。
+                     if is_file {
+                        files.push(p);
+                     }
+                }
             }
         }
 
@@ -77,8 +82,7 @@ impl FileScanner {
 
         let include = build_globset(include_slice)?;
         let exclude = build_globset(&config.exclude_globs)?;
-        let mut files = Vec::new();
-
+        
         for entry in WalkDir::new(&config.root_path)
             .into_iter()
             .filter_map(std::result::Result::ok)
@@ -96,6 +100,8 @@ impl FileScanner {
             }
         }
 
+        files.sort();
+        files.dedup();
         Ok(files)
     }
 }

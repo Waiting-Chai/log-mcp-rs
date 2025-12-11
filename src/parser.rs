@@ -7,7 +7,7 @@ use regex::Regex;
 use crate::error::Result;
 use crate::model::LogEntry;
 
-/// Log parser: decide single-line or multiline aggregation based on `log_start_pattern`.
+/// 日志解析器：根据 log_start_pattern 决定单行解析还是多行聚合。
 #[derive(Clone, Default)]
 pub struct LogParser;
 
@@ -82,7 +82,7 @@ impl LogParser {
                     buf.push(line);
                 } else {
                     if buf.is_empty() {
-                        // No start matched yet; begin a new entry to keep every line.
+                        // 尚未匹配到开始模式；开始一个新条目以保留每一行。
                         current_start = line_no;
                     }
                     current_end = line_no;
