@@ -1,6 +1,9 @@
 # Build stage
 FROM rust:1-slim-bookworm AS builder
 
+# Change source to Aliyun
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
+
 WORKDIR /usr/src/app
 COPY . .
 
@@ -12,6 +15,9 @@ RUN cargo build --release
 
 # Runtime stage
 FROM debian:bookworm-slim
+
+# Change source to Aliyun
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
 
 WORKDIR /app
 
