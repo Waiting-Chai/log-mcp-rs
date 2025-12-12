@@ -7,6 +7,17 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
 WORKDIR /usr/src/app
 COPY . .
 
+# Configure Cargo to use rsproxy mirror for faster builds in China
+RUN mkdir -p .cargo && \
+    echo '[source.crates-io]' > .cargo/config.toml && \
+    echo 'replace-with = "rsproxy-sparse"' >> .cargo/config.toml && \
+    echo '[source.rsproxy]' >> .cargo/config.toml && \
+    echo 'registry = "https://rsproxy.cn/crates.io-index"' >> .cargo/config.toml && \
+    echo '[source.rsproxy-sparse]' >> .cargo/config.toml && \
+    echo 'registry = "sparse+https://rsproxy.cn/index/"' >> .cargo/config.toml && \
+    echo '[registries.crates-io]' >> .cargo/config.toml && \
+    echo 'protocol = "sparse"' >> .cargo/config.toml
+
 # Install build dependencies
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
