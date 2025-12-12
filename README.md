@@ -32,9 +32,9 @@ server:
 
 log_parser:
   # 用于识别多行日志的起始行正则（例如以日期开头）
-  line_start_regex: '^\\d{4}-\\d{2}-\\d{2}' 
+  line_start_regex: '^\d{4}-\d{2}-\d{2}' 
   # 提取时间戳的正则，用于按时间范围搜索
-  default_timestamp_regex: '\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}'
+  default_timestamp_regex: '\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}'
 
 search:
   default_page_size: 20
@@ -70,6 +70,77 @@ log_sources:
 ```
 
 > **注意**：请务必使用绝对路径。
+
+## 服务器部署 (Docker)
+
+本指南介绍如何将服务部署到远程服务器（如 Linux），并通过 Docker 运行，同时支持本地 MCP 客户端远程连接。
+
+### 1. 准备部署包
+
+在项目根目录下执行打包命令（排除编译产物）：
+
+```bash
+tar -czf deploy.tar.gz --exclude='target' --exclude='.git' .
+```
+
+### 2. 上传并构建
+
+将压缩包上传到服务器（例如 `/home/log-mcp-rs`），然后执行以下操作：
+
+```bash
+# 解压
+mkdir -p /home/log-mcp-rs
+tar -xzf deploy.tar.gz -C /home/log-mcp-rs
+cd /home/log-mcp-rs
+
+# 构建 Docker 镜像
+# 注意：Dockerfile 已针对国内网络优化（使用阿里云源）
+docker build -t log-mcp-rs:latest .
+```
+
+### 3. 启动服务
+
+使用 Docker 运行服务，挂载宿主机日志目录：
+
+```bash
+docker run -d \
+  --name log-mcp-rs \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  -v /var/log:/var/log \
+  -v /home:/home \
+  log-mcp-rs:latest
+```
+
+*   `-p 3000:3000`: 暴露 HTTP API 端口（可选，MCP 主要通过 Stdio 通信）。
+*   `-v /var/log:/var/log`: 允许容器访问宿主机的日志目录（根据实际需求调整）。
+
+### 4. 远程集成到本地 Agent
+
+您无需在本地运行任何服务，只需通过 SSH 隧道调用远程容器内的进程。
+
+在本地 Agent（如 Trae/Claude Desktop）的配置文件中添加：
+
+```json
+{
+  "mcpServers": {
+    "remote-log-server": {
+      "command": "ssh",
+      "args": [
+        "-o", "StrictHostKeyChecking=no",
+        "root@<SERVER_IP>",           // 替换为您的服务器 IP
+        "docker", "exec", "-i",       // 在容器内执行
+        "-e", "LOG_SEARCH_MCP__SERVER__MODE=stdio", // 强制使用 stdio 模式
+        "log-mcp-rs",                 // 容器名称
+        "log-search-mcp", "/app/config.yaml"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+**前置条件**：本地机器需配置好 SSH 免密登录（SSH Key）到远程服务器，否则 MCP 客户端无法处理密码输入。
 
 ## 功能详解
 
