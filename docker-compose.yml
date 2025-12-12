@@ -1,0 +1,16 @@
+services:
+  log-mcp:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount your logs directory to /var/log/app inside the container
+      # CHANGE THIS to your actual log directory
+      - ./logs:/var/log/app:ro
+      # Mount the config file
+      - ./config.yaml:/app/config.yaml
+    environment:
+      # Ensure server runs in HTTP mode or BOTH
+      - LOG_SEARCH_MCP__SERVER__MODE=http
+      # Override config to look at the mounted log directory
+      # This assumes you set `log_sources.log_file_paths` or rely on `scan_config` in requests

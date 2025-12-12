@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use axum::{
@@ -6,12 +7,15 @@ use axum::{
         Query, State,
     },
     http::StatusCode,
-    response::IntoResponse,
+    response::{sse::{Event, Sse, KeepAlive}, IntoResponse},
     routing::{get, post},
     Json, Router,
 };
+use futures::stream::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::model::{FileScanConfig, SearchRequest};
 use crate::search::SearchEngine;
@@ -20,6 +24,7 @@ use crate::{config::Config, error::Result};
 #[derive(Clone)]
 pub struct AppState {
     pub engine: Arc<SearchEngine>,
+    pub sessions: Arc<RwLock<HashMap<String, mpsc::UnboundedSender<Event>>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -98,11 +103,62 @@ async fn list_files_handler(
     }
 }
 
+async fn sse_handler(State(state): State<AppState>) -> Sse<impl Stream<Item = std::result::Result<Event, axum::Error>>> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let session_id = format!("{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
+    
+    // Send endpoint event
+    let endpoint_url = format!("/message?session_id={}", session_id);
+    // Note: In a real deployment behind a proxy, this URL might need to be absolute or relative correctly.
+    // For now, we assume relative path works if client handles it, or client is local.
+    // MCP spec usually expects relative URI reference.
+    let _ = tx.send(Event::default().event("endpoint").data(endpoint_url));
+    
+    state.sessions.write().unwrap().insert(session_id.clone(), tx);
+    
+    let stream = UnboundedReceiverStream::new(rx).map(Ok::<_, axum::Error>);
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+#[derive(Deserialize)]
+struct MessageQuery {
+    session_id: String,
+}
+
+async fn message_handler(
+    State(state): State<AppState>,
+    Query(q): Query<MessageQuery>,
+    Json(req): Json<crate::mcp::RpcRequest>,
+) -> impl IntoResponse {
+    let sender = {
+        let sessions = state.sessions.read().unwrap();
+        sessions.get(&q.session_id).cloned()
+    };
+
+    if let Some(sender) = sender {
+        let engine = state.engine.clone();
+        tokio::spawn(async move {
+            let resp = crate::mcp::process_request(engine, req).await;
+            if let Ok(json_str) = serde_json::to_string(&resp) {
+                let _ = sender.send(Event::default().event("message").data(json_str));
+            }
+        });
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
 pub fn build_router(engine: Arc<SearchEngine>) -> Router {
-    let state = AppState { engine };
+    let state = AppState { 
+        engine,
+        sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
     Router::new()
         .route("/search", post(search_handler))
         .route("/files", get(list_files_handler))
+        .route("/sse", get(sse_handler))
+        .route("/message", post(message_handler))
         .with_state(state)
 }
 

@@ -16,7 +16,7 @@ fn debug_log(msg: &str) {
 }
 
 #[derive(Debug, Deserialize)]
-struct RpcRequest {
+pub struct RpcRequest {
     #[serde(default)]
     pub id: Value,
     pub method: String,
@@ -24,8 +24,8 @@ struct RpcRequest {
     pub params: Value,
 }
 
-#[derive(Debug, Serialize)]
-struct RpcResponse {
+#[derive(Debug, Serialize, Clone)]
+pub struct RpcResponse {
     pub jsonrpc: &'static str,
     pub id: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -34,10 +34,39 @@ struct RpcResponse {
     pub error: Option<RpcError>,
 }
 
-#[derive(Debug, Serialize)]
-struct RpcError {
+#[derive(Debug, Serialize, Clone)]
+pub struct RpcError {
     code: i32,
     message: String,
+}
+
+pub async fn process_request(engine: Arc<SearchEngine>, req: RpcRequest) -> RpcResponse {
+    match req.method.as_str() {
+        "initialize" => handle_initialize(&req),
+        "notifications/initialized" => {
+            RpcResponse {
+                jsonrpc: "2.0",
+                id: req.id,
+                result: Some(Value::Bool(true)),
+                error: None,
+            }
+        }
+
+        "tools/call" | "call_tool" => handle_tool_call(&engine, &req).await,
+        
+        "list_log_files" => handle_list_files(&engine, &req).await,
+        "search_logs" => handle_search(&engine, &req).await,
+        "tools/list" | "list_tools" => handle_list_tools(&req),
+        _ => RpcResponse {
+            jsonrpc: "2.0",
+            id: req.id,
+            result: None,
+            error: Some(RpcError {
+                code: -32601,
+                message: format!("method not found: {}", req.method),
+            }),
+        },
+    }
 }
 
 pub async fn run_stdio(engine: Arc<SearchEngine>) -> Result<()> {
@@ -66,36 +95,7 @@ pub async fn run_stdio(engine: Arc<SearchEngine>) -> Result<()> {
             }
         };
 
-        let resp = match req.method.as_str() {
-            "initialize" => handle_initialize(&req),
-            "notifications/initialized" => {
-                if req.id.is_null() {
-                    continue;
-                }
-                RpcResponse {
-                    jsonrpc: "2.0",
-                    id: req.id,
-                    result: Some(Value::Bool(true)),
-                    error: None,
-                }
-            }
-
-            "tools/call" | "call_tool" => handle_tool_call(&engine, &req).await,
-            
-            "list_log_files" => handle_list_files(&engine, &req).await,
-            "search_logs" => handle_search(&engine, &req).await,
-            "tools/list" | "list_tools" => handle_list_tools(&req),
-            _ => RpcResponse {
-                jsonrpc: "2.0",
-                id: req.id,
-                result: None,
-                error: Some(RpcError {
-                    code: -32601,
-                    message: format!("method not found: {}", req.method),
-                }),
-            },
-        };
-
+        let resp = process_request(engine.clone(), req).await;
         write_response(&mut stdout, resp).await?;
     }
 
