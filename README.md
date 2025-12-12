@@ -167,7 +167,7 @@ log_sources:
 
 ## 📝 开发日志
 
-- **2024-12-12**: 
+- **2025-12-12**: 
   - 新增 SSE Server 支持，兼容标准 MCP 协议。
   - 添加 `docker-compose` 支持，优化部署流程。
   - 优化 Dockerfile 国内构建速度。
